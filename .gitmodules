@@ -1,0 +1,9 @@
+[submodule "tensor"]
+	path = tensor
+	url = https://github.com/haydnv/tensor.py.git
+[submodule "btree"]
+	path = btree
+	url = https://github.com/haydnv/btree.py.git
+[submodule "einsum"]
+	path = einsum
+	url = https://github.com/haydnv/einsum.py.git
