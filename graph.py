@@ -21,13 +21,15 @@ class Graph(object):
     def bft(self, node):  # breadth-first traversal
         [node_index] = list(self.nodes.slice({"node": node}).select(["id"]))
         adjacent = SparseTensor([len(self.nodes)])
+        adjacent[node_index] = 1
         visited = SparseTensor([len(self.nodes)])
 
         while adjacent.any():
             visited = visited | adjacent
             adjacent = einsum('ji,j->i', self.edges, adjacent)
             adjacent.mask(visited)
-            print("bft", adjacent)
+            for node_id, _ in adjacent.filled():
+                yield from (node for _, node in self.nodes[(node_id,)])
 
 
 def test_bft():
@@ -42,7 +44,8 @@ def test_bft():
     g.add_edge(20, 30)
     g.add_edge(30, 40)
     g.add_edge(30, 50)
-    g.bft(10)
+    found = list(g.bft(10))
+    assert found == [20, 30, 40, 50]
 
 
 if __name__ == "__main__":
