@@ -21,7 +21,6 @@ class Graph(object):
     def bft(self, node):  # breadth-first traversal
         [node_index] = list(self.nodes.slice({"node": node}).select(["id"]))
         adjacent = SparseTensor([len(self.nodes)])
-        adjacent[node_index] = 1
         visited = SparseTensor([len(self.nodes)])
 
         while adjacent.any():
@@ -31,7 +30,7 @@ class Graph(object):
             print("bft", adjacent)
 
 
-def test_bfs():
+def test_bft():
     g = Graph()
     g.add_node(10)
     g.add_node(20)
@@ -47,5 +46,5 @@ def test_bfs():
 
 
 if __name__ == "__main__":
-    test_bfs()
-
+    test_bft()
+    print("PASS")
