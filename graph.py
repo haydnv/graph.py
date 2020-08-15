@@ -1,3 +1,5 @@
+import numpy as np
+
 from btree.table import Index, Schema, Table
 from einsum.einsum import einsum
 from tensor.sparse import SparseTensor
@@ -20,16 +22,18 @@ class Graph(object):
 
     def bft(self, node):  # breadth-first traversal
         [node_index] = list(self.nodes.slice({"node": node}).select(["id"]))
-        adjacent = SparseTensor([len(self.nodes)])
-        adjacent[node_index] = 1
-        visited = SparseTensor([len(self.nodes)])
+        adjacent = SparseTensor([len(self.nodes)], np.bool)
+        adjacent[node_index] = True
+        visited = SparseTensor([len(self.nodes)], np.bool)
 
         while adjacent.any():
             visited = visited | adjacent
-            adjacent = einsum('ji,j->i', self.edges, adjacent)
+            adjacent = einsum('ji,j->i', self.edges, adjacent).copy()
             adjacent.mask(visited)
-            for node_id, _ in adjacent.filled():
-                yield from (node for _, node in self.nodes[(node_id,)])
+
+            for i, _ in adjacent.filled():
+                for _, key in self.nodes[i]:
+                    yield key
 
 
 def test_bft():
