@@ -12,57 +12,90 @@ class Graph(object):
             schema = Schema(node_key, node_values)
             self.nodes[node_type] = Table(Index(schema))
 
-        self.node_ids = Table(
+        self._node_ids = Table(
             Index(Schema([("type", str), ("key", tuple)], [("id", int)])))
-        self.node_ids.add_index("node_id", ("id",))
+        self._node_ids.add_index("node_id", ("id",))
 
-        self.edge_data = {}
-        self.edges = {}
+        self._edge_data = {}
+        self._edges = {}
         for edge_type, edge_values in edge_schema.items():
-            if edge_values is None:
-                self.edge_data[edge_type] = None
-            else:
-                schema = Schema([("from", int), ("to", int)], edge_values)
-                self.edge_data[edge_type] = Table(Index(schema))
+            edge_values = edge_values or []
+            schema = Schema([("from", int), ("to", int)], edge_values)
+            self._edge_data[edge_type] = Table(Index(schema))
 
-            self.edges[edge_type] = SparseTensor([0, 0])
+        self._edges[edge_type] = SparseTensor([0, 0])
 
-        self.max_id = 0
+        self._max_id = 0
+
+    def __eq__(self, other):
+        if set(self.nodes.keys()) != set(other.nodes.keys()):
+            return False
+
+        if set(self._edges.keys()) != set(other._edges.keys()):
+            return False
+
+        for node_type in self.nodes.keys():
+            if self.nodes[node_type].schema() != other.nodes[node_type].schema():
+                return False
+            if self.nodes[node_type].count() != other.nodes[node_type].count():
+                return False
+
+        for edge_type in self._edge_data.keys():
+            if self._edge_data[edge_type].schema() != other._edge_data[edge_type].schema():
+                return False
+            if self._edges[edge_type].filled_count() != other._edges[edge_type].filled_count():
+                return False
+
+        these_nodes, these_edges = self.as_stream()
+        those_nodes, those_edges = other.as_stream()
+
+        for this, that in zip(these_nodes.values(), those_nodes.values()):
+            this, that = iter(this), iter(that)
+            for this_node, that_node in zip(this, that):
+                if this_node != that_node:
+                    return False
+
+        for this, that in zip(these_edges.values(), those_edges.values()):
+            for this_edge, that_edge in zip(this, that):
+                if this_edge != that_edge:
+                    return False
+
+
+        return True
 
     def add_node(self, node_type, key, value=tuple()):
         self.nodes[node_type].insert(key + value)
 
-        self.node_ids.insert([node_type, key, self.max_id])
-        self.max_id += 1
+        self._node_ids.insert([node_type, key, self._max_id])
+        self._max_id += 1
 
-        for edges in self.edges.values():
-            edges.expand([self.max_id, self.max_id])
+        for edges in self._edges.values():
+            edges.expand([self._max_id, self._max_id])
 
     def add_edge(self, label, from_node, to_node, value=[]):
         (from_type, from_key) = from_node
-        [index_from] = list(self.node_ids.slice({
+        [(index_from,)] = list(self._node_ids.slice({
             "type": from_type, "key": from_key}).select(["id"]))
 
         (to_type, to_key) = to_node
-        [index_to] = list(self.node_ids.slice({
+        [(index_to,)] = list(self._node_ids.slice({
             "type": to_type, "key": to_key}).select(["id"]))
 
-        self.edges[label][(index_from, index_to)] = 1
-        if self.edge_data[label] is not None:
-            self.edge_data[label].insert([index_from, index_to] + value)
+        self._edges[label][(index_from, index_to)] = 1
+        self._edge_data[label].insert([index_from, index_to] + value)
 
     def bft(self, edge_type, node):  # breadth-first traversal
-        edges = self.edges[edge_type]
+        edges = self._edges[edge_type]
 
         (node_type, node_key) = node
         
-        [node_index] = list(self.node_ids.slice({
+        [node_index] = list(self._node_ids.slice({
             "type": node_type, "key": node_key}).select(["id"]))
 
-        adjacent = SparseTensor([self.max_id], np.bool)
+        adjacent = SparseTensor([self._max_id], np.bool)
         adjacent[node_index] = True
 
-        visited = SparseTensor([self.max_id], np.bool)
+        visited = SparseTensor([self._max_id], np.bool)
 
         while adjacent.any():
             visited = visited | adjacent
@@ -70,8 +103,39 @@ class Graph(object):
             adjacent.mask(visited)
 
             for (i,), _ in adjacent.filled():
-                for node_type, node_key, _ in self.node_ids.slice({"id": i}):
+                for node_type, node_key, _ in self._node_ids.slice({"id": i}):
                     yield node_type, node_key
+
+    def as_stream(self):
+        nodes = {
+            node_type: nodes.slice({})
+            for node_type, nodes in self.nodes.items()
+        }
+
+        edges = {
+            edge_type: self._stream_edges(edge_type)
+            for edge_type in self._edge_data.keys()
+        }
+
+        return (nodes, edges)
+
+    def _stream_edges(self, label):
+        columns = ("type", "key")
+        for row in self._edge_data[label]:
+            if len(row) == 2:
+                from_id, to_id = row
+                data = None
+            elif len(row) == 3:
+                from_id, to_id, data = row
+            else:
+                raise RuntimeError
+
+            [from_node] = list(
+                self._node_ids.slice({"id": from_id}).select(columns))
+            [to_node] = list(
+                self._node_ids.slice({"id": to_id}).select(columns))
+
+            yield (from_node, to_node, data)
 
 
 def test_bft():
@@ -95,7 +159,29 @@ def test_bft():
     assert found == [("node", key(i)) for i in range(2, 6)]
 
 
+def test_equals():
+    g1 = Graph({"node": ([("key", int)], [])}, {"edge": None})
+    g2 = Graph({"node": ([("key", int)], [])}, {"edge": None})
+
+    key = lambda i: (i,)
+
+    g1.add_node("node", key(1))
+    g1.add_node("node", key(2))
+    g2.add_node("node", key(1))
+    g2.add_node("node", key(2))
+
+    g1.add_edge("edge", ("node", key(1)), ("node", key(2)))
+    g2.add_edge("edge", ("node", key(1)), ("node", key(2)))
+
+    assert g1 == g2
+
+    g1.add_edge("edge", ("node", key(2)), ("node", key(1)))
+
+    assert g1 != g2
+
+
 if __name__ == "__main__":
     test_bft()
+    test_equals()
     print("PASS")
 
