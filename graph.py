@@ -179,6 +179,14 @@ def test_equals():
 
     assert g1 != g2
 
+    g2.add_edge("edge", ("node", key(2)), ("node", key(1)))
+
+    assert g1 == g2
+
+    g2.add_node("node", key(3))
+
+    assert g1 != g2
+
 
 if __name__ == "__main__":
     test_bft()
