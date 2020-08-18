@@ -16,14 +16,9 @@ class Graph(object):
             Index(Schema([("type", str), ("key", tuple)], [("id", int)])))
         self._node_ids.add_index("node_id", ("id",))
 
-        self._edge_data = {}
         self._edges = {}
-        for edge_type, edge_values in edge_schema.items():
-            edge_values = edge_values or []
-            schema = Schema([("from", int), ("to", int)], edge_values)
-            self._edge_data[edge_type] = Table(Index(schema))
-
-        self._edges[edge_type] = SparseTensor([0, 0])
+        for edge_label, edge_dtype in edge_schema.items():
+            self._edges[edge_label] = SparseTensor([0, 0], edge_dtype)
 
         self._max_id = 0
 
@@ -40,10 +35,14 @@ class Graph(object):
             if self.nodes[node_type].count() != other.nodes[node_type].count():
                 return False
 
-        for edge_type in self._edge_data.keys():
-            if self._edge_data[edge_type].schema() != other._edge_data[edge_type].schema():
+        for label in self._edges.keys():
+            this = self._edges[label]
+            that = other._edges[label]
+
+            if this.dtype != that.dtype:
                 return False
-            if self._edges[edge_type].filled_count() != other._edges[edge_type].filled_count():
+
+            if this.filled_count() != that.filled_count():
                 return False
 
         these_nodes, these_edges = self.as_stream()
@@ -72,7 +71,7 @@ class Graph(object):
         for edges in self._edges.values():
             edges.expand([self._max_id, self._max_id])
 
-    def add_edge(self, label, from_node, to_node, value=[]):
+    def add_edge(self, label, from_node, to_node, value=True):
         (from_type, from_key) = from_node
         [(index_from,)] = list(self._node_ids.slice({
             "type": from_type, "key": from_key}).select(["id"]))
@@ -81,8 +80,7 @@ class Graph(object):
         [(index_to,)] = list(self._node_ids.slice({
             "type": to_type, "key": to_key}).select(["id"]))
 
-        self._edges[label][(index_from, index_to)] = 1
-        self._edge_data[label].insert([index_from, index_to] + value)
+        self._edges[label][(index_from, index_to)] = value
 
     def bft(self, edge_type, node):  # breadth-first traversal
         edges = self._edges[edge_type]
@@ -113,33 +111,25 @@ class Graph(object):
         }
 
         edges = {
-            edge_type: self._stream_edges(edge_type)
-            for edge_type in self._edge_data.keys()
+            label: self._stream_edges(label)
+            for label in self._edges.keys()
         }
 
         return (nodes, edges)
 
     def _stream_edges(self, label):
         columns = ("type", "key")
-        for row in self._edge_data[label]:
-            if len(row) == 2:
-                from_id, to_id = row
-                data = None
-            elif len(row) == 3:
-                from_id, to_id, data = row
-            else:
-                raise RuntimeError
-
+        for (from_id, to_id), weight in self._edges[label].filled():
             [from_node] = list(
                 self._node_ids.slice({"id": from_id}).select(columns))
             [to_node] = list(
                 self._node_ids.slice({"id": to_id}).select(columns))
 
-            yield (from_node, to_node, data)
+            yield (from_node, to_node, weight)
 
 
 def test_bft():
-    g = Graph({"node": ([("key", int)], [])}, {"edge": None})
+    g = Graph({"node": ([("key", int)], [])}, {"edge": np.bool})
 
     key = lambda i: (i,)
 
@@ -160,8 +150,8 @@ def test_bft():
 
 
 def test_equals():
-    g1 = Graph({"node": ([("key", int)], [])}, {"edge": None})
-    g2 = Graph({"node": ([("key", int)], [])}, {"edge": None})
+    g1 = Graph({"node": ([("key", int)], [])}, {"edge": np.bool})
+    g2 = Graph({"node": ([("key", int)], [])}, {"edge": np.bool})
 
     key = lambda i: (i,)
 
@@ -184,6 +174,12 @@ def test_equals():
     assert g1 == g2
 
     g2.add_node("node", key(3))
+
+    assert g1 != g2
+
+    g1.add_node("node", key(3))
+    g1.add_edge("edge", ("node", key(1)), ("node", key(3)))
+    g2.add_edge("edge", ("node", key(2)), ("node", key(3)))
 
     assert g1 != g2
 
