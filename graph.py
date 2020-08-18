@@ -12,9 +12,9 @@ class Graph(object):
             schema = Schema(node_key, node_values)
             self.nodes[node_type] = Table(Index(schema))
 
-        self._node_ids = Table(
+        self._node_indexs = Table(
             Index(Schema([("type", str), ("key", tuple)], [("id", int)])))
-        self._node_ids.add_index("node_id", ("id",))
+        self._node_indexs.add_index("node_index", ("id",))
 
         self._edges = {}
         for edge_label, edge_dtype in edge_schema.items():
@@ -65,35 +65,26 @@ class Graph(object):
     def add_node(self, node_type, key, value=tuple()):
         self.nodes[node_type].insert(key + value)
 
-        self._node_ids.insert([node_type, key, self._max_id])
+        self._node_indexs.insert([node_type, key, self._max_id])
         self._max_id += 1
 
         for edges in self._edges.values():
             edges.expand([self._max_id, self._max_id])
 
     def add_edge(self, label, from_node, to_node, value=True):
-        (from_type, from_key) = from_node
-        [(index_from,)] = list(self._node_ids.slice({
-            "type": from_type, "key": from_key}).select(["id"]))
+        from_node_index = self._get_node_index(from_node)
+        to_node_index = self._get_node_index(to_node)
+        self._edges[label][(from_node_index, to_node_index)] = value
 
-        (to_type, to_key) = to_node
-        [(index_to,)] = list(self._node_ids.slice({
-            "type": to_type, "key": to_key}).select(["id"]))
+    def bft(self, edge_label, node):  # breadth-first traversal
+        edges = self._edges[edge_label]
 
-        self._edges[label][(index_from, index_to)] = value
+        node_index = self._get_node_index(node)
 
-    def bft(self, edge_type, node):  # breadth-first traversal
-        edges = self._edges[edge_type]
-
-        (node_type, node_key) = node
-        
-        [node_index] = list(self._node_ids.slice({
-            "type": node_type, "key": node_key}).select(["id"]))
+        visited = SparseTensor([self._max_id], np.bool)
 
         adjacent = SparseTensor([self._max_id], np.bool)
         adjacent[node_index] = True
-
-        visited = SparseTensor([self._max_id], np.bool)
 
         while adjacent.any():
             visited = visited | adjacent
@@ -101,8 +92,7 @@ class Graph(object):
             adjacent.mask(visited)
 
             for (i,), _ in adjacent.filled():
-                for node_type, node_key, _ in self._node_ids.slice({"id": i}):
-                    yield node_type, node_key
+                yield self._get_node(i)
 
     def as_stream(self):
         nodes = {
@@ -117,14 +107,21 @@ class Graph(object):
 
         return (nodes, edges)
 
-    def _stream_edges(self, label):
-        columns = ("type", "key")
-        for (from_id, to_id), weight in self._edges[label].filled():
-            [from_node] = list(
-                self._node_ids.slice({"id": from_id}).select(columns))
-            [to_node] = list(
-                self._node_ids.slice({"id": to_id}).select(columns))
+    def _get_node(self, node_index):
+        [node] = list(
+            self._node_indexs.slice({"id": node_index}).select(("type", "key")))
+        return node
 
+    def _get_node_index(self, node):
+        (node_type, node_key) = node
+        [(node_index,)] = list(self._node_indexs.slice({
+            "type": node_type, "key": node_key}).select(["id"]))
+        return node_index
+
+    def _stream_edges(self, label):
+        for (from_id, to_id), weight in self._edges[label].filled():
+            from_node = self._get_node(from_id)
+            to_node = self._get_node(to_id)
             yield (from_node, to_node, weight)
 
 
