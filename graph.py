@@ -16,8 +16,11 @@ class Graph(object):
             Index(Schema([("type", str), ("key", tuple)], [("index", int)])))
         self._node_indices.add_index("node_index", ("index",))
 
+        # cf. https://en.wikipedia.org/wiki/Degree_matrix
+        self._degrees = {}
         self._edges = {}
         for edge_label, edge_dtype in edge_schema.items():
+            self._degrees[edge_label] = SparseTensor([0, 0], np.uint64)
             self._edges[edge_label] = SparseTensor([0, 0], edge_dtype)
 
         self._max_id = 0
@@ -59,7 +62,6 @@ class Graph(object):
                 if this_edge != that_edge:
                     return False
 
-
         return True
 
     def add_node(self, node_type, key, value=tuple()):
@@ -68,6 +70,9 @@ class Graph(object):
         self._node_indices.insert([node_type, key, self._max_id])
         self._max_id += 1
 
+        for degrees in self._degrees.values():
+            degrees.expand([self._max_id, self._max_id])
+
         for edges in self._edges.values():
             edges.expand([self._max_id, self._max_id])
 
@@ -75,6 +80,7 @@ class Graph(object):
         from_node_index = self._get_node_index(from_node)
         to_node_index = self._get_node_index(to_node)
         self._edges[label][(from_node_index, to_node_index)] = value
+        self._degrees[label][(to_node_index, to_node_index)] += 1
 
     def as_stream(self):
         nodes = {
@@ -112,6 +118,14 @@ class Graph(object):
             if limit and i >= limit:
                 break
 
+    def contains_cycle(self, edge_label):
+        degrees = self._degrees[edge_label]
+        edges = self._edges[edge_label]
+        # cf. https://en.wikipedia.org/wiki/Laplacian_matrix
+        laplacian = degrees - edges
+        acyclic = trace(laplacian) == 2 * rank(laplacian)
+        return not acyclic
+
     def _get_node(self, node_index):
         [node] = list(
             self._node_indices.slice({"index": node_index})
@@ -129,6 +143,23 @@ class Graph(object):
             from_node = self._get_node(from_id)
             to_node = self._get_node(to_id)
             yield (from_node, to_node, weight)
+
+
+def rank(matrix):
+    # compute the row echelon form of the matrix
+    # cf. https://stattrek.com/matrix-algebra/echelon-transform.aspx
+    # return the number of nonzero rows
+    raise NotImplementedError
+
+
+def trace(matrix):
+    assert matrix.ndim == 2 and matrix.shape[0] == matrix.shape[1]
+
+    trace = matrix.dtype(0)
+    for i in range(matrix.shape[0]):
+        trace =+ matrix[i, i]
+
+    return trace
 
 
 def test_bft():
@@ -150,6 +181,25 @@ def test_bft():
 
     found = list(g.bft("edge", ("node", key(1))))
     assert found == [("node", key(i)) for i in range(2, 6)]
+
+
+def test_contains_cycle():
+    g = Graph({"node": ([("key", int)], [])}, {"edge": np.bool})
+
+    assert not g.contains_cycle("edge")
+
+    key = lambda i: (i,)
+
+    g.add_node("node", key(1))
+    g.add_node("node", key(2))
+    g.add_node("node", key(3))
+
+    g.add_edge("edge", ("node", key(1)), ("node", key(2)))
+    g.add_edge("edge", ("node", key(2)), ("node", key(3)))
+    assert not g.contains_cycle("edge")
+
+    g.add_edge("edge", ("node", key(3)), ("node", key(1)))
+    assert g.contains_cycle("edge")
 
 
 def test_equals():
